@@ -1,17 +1,22 @@
 import Fastify, { FastifyReply, FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
+import fastifyStatic from "@fastify/static";
 import sensible from "@fastify/sensible";
 import jwt from "@fastify/jwt";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { audits, employees, findEmployee, findUser, initializeDatabase, leaves, payroll, users, clean, userForEmployee } from "./local-db.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 type Role = "ADMIN" | "HR" | "EMPLOYEE";
 const app = Fastify({ logger: true });
 declare module "@fastify/jwt" { interface FastifyJWT { user: { id: string; role: Role; email: string; employeeId?: string } } }
 await app.register(cors, { origin: process.env.WEB_ORIGIN ?? "http://localhost:5173" });
 await app.register(helmet); await app.register(sensible); await app.register(jwt, { secret: process.env.JWT_SECRET ?? "dev-only-secret-change-me" });
+const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
+await app.register(fastifyStatic, { root: webRoot, prefix: "/" });
 const auth = async (request: FastifyRequest, reply: FastifyReply) => { try { await request.jwtVerify(); } catch { return reply.unauthorized("Authentication required"); } };
 const roles = (...allowed: Role[]) => async (request: FastifyRequest, reply: FastifyReply) => { await auth(request, reply); if (!allowed.includes(request.user.role)) return reply.forbidden("Insufficient permissions"); };
 const audit = (userId: string | undefined, action: string, entity: string, entityId?: string, metadata?: unknown) => audits.insert({ userId, action, entity, entityId, metadata, createdAt: new Date().toISOString() });
@@ -48,5 +53,6 @@ app.patch("/api/leave/:id", { preHandler: roles("ADMIN", "HR") }, async (request
 app.get("/api/payroll", { preHandler: auth }, async (request) => { const filter = request.user.role === "EMPLOYEE" ? { employeeId: request.user.employeeId } : {}; const result = await payroll.find(filter).sort({ period: -1 }); for (const item of result) { item.employee = await findEmployee(item.employeeId); if (item.employee) item.employee.user = await userForEmployee(item.employee); } return result.map(clean); });
 app.post("/api/payroll/process", { preHandler: roles("ADMIN", "HR") }, async (request, reply) => { const parsed = z.object({ period: z.string().regex(/^\d{4}-\d{2}$/) }).safeParse(request.body); if (!parsed.success) return reply.badRequest("Period must use YYYY-MM format"); const active = await employees.find({ employmentStatus: "ACTIVE" }); for (const employee of active) { const gross = employee.baseSalary / 12; const record = { employeeId: employee._id, period: parsed.data.period, grossSalary: gross, tax: gross * .18, deductions: gross * .05, netSalary: gross * .77, status: "PROCESSED", createdAt: new Date().toISOString() }; await payroll.update({ employeeId: employee._id, period: parsed.data.period }, { $set: record }, { upsert: true }); } await audit(request.user.id, "PROCESS", "Payroll", parsed.data.period, { records: active.length }); return { processed: active.length, period: parsed.data.period }; });
 app.get("/api/audit", { preHandler: roles("ADMIN") }, async () => { const result = await audits.find({}).sort({ createdAt: -1 }).limit(100); for (const item of result) item.user = await findUser(item.userId); return result.map(clean); });
+app.get("/", async (_request, reply) => reply.sendFile("index.html"));
 app.setErrorHandler((error, _request, reply) => { app.log.error(error); if ((error as { errorType?: string }).errorType === "uniqueViolated") return reply.conflict("A record with this value already exists"); return reply.internalServerError("An unexpected server error occurred"); });
 await initializeDatabase(); const port = Number(process.env.PORT ?? 4000); app.listen({ port, host: "0.0.0.0" }).catch(error => { app.log.error(error); process.exit(1); });

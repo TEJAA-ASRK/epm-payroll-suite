@@ -68,3 +68,9 @@ git push -u origin main
 ```
 
 Do not commit `.env` or `apps/api/data`; both are ignored because they may contain secrets or local runtime data.
+
+## Deploy with Render
+
+The repository includes `render.yaml` for a single-service deployment. In Render, choose **New → Blueprint**, connect this GitHub repository, and select the `main` branch. Render will build the frontend and API, generate a JWT secret, and provide one public URL.
+
+The free service uses an ephemeral filesystem, so local embedded data is suitable for demos only. For persistent production payroll data, migrate the repository adapter to a managed MongoDB/PostgreSQL service before launch.
